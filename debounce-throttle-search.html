@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Debounce vs Throttle — Search Demo</title>
+  <style>
+    body { font-family: Inter, system-ui, sans-serif; margin: 24px; color:#111; }
+    h1 { margin-bottom: 6px; font-size: 20px; }
+    .controls { margin-bottom: 12px; display:flex; gap:12px; align-items:center; }
+    .box { border:1px solid #ddd; padding:12px; border-radius:8px; max-width:720px; }
+    input[type="text"]{ width:100%; padding:10px; font-size:16px; border-radius:6px; border:1px solid #ccc; }
+    .switch { display:flex; gap:8px; align-items:center; }
+    .log { margin-top:12px; max-height:160px; overflow:auto; background:#fafafa; padding:8px; border-radius:6px; border:1px dashed #eee; font-size:13px; }
+    .results { margin-top:12px; list-style:none; padding:0; }
+    .result-item{ padding:8px; border-bottom:1px solid #f0f0f0; }
+    .meta { font-size:12px; color:#666; margin-left:6px; }
+    .badge { display:inline-block; padding:4px 8px; background:#eef; border-radius:999px; font-size:12px; color:#125; }
+    .small { font-size:13px; color:#444; }
+    .btn { padding:6px 10px; border-radius:6px; border:1px solid #bdbdbd; background:#fff; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>Debounce vs Throttle — Search demo</h1>
+    <div class="controls">
+      <div style="flex:1">
+        <label class="small">Type to search (simulated API)</label>
+        <input id="search" type="text" placeholder="Start typing..." autocomplete="off" />
+      </div>
+
+      <div class="switch">
+        <label><input type="radio" name="mode" value="debounce" checked /> Debounce</label>
+        <label><input type="radio" name="mode" value="throttle" /> Throttle</label>
+      </div>
+
+      <div style="min-width:120px;">
+        <div class="small">Delay / Limit (ms)</div>
+        <input id="delay" class="small" type="number" value="500" min="50" style="width:84px;padding:6px;border-radius:6px;border:1px solid #ccc;" />
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        <button id="clear" class="btn">Clear logs</button>
+        <button id="simulate" class="btn">Simulate rapid input</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="small">Mode: <span id="modeLabel" class="badge">Debounce</span>
+        <span class="meta">API calls made: <span id="apiCount">0</span></span>
+      </div>
+      <ul id="results" class="results" aria-live="polite"></ul>
+      <div id="log" class="log" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <script>
+    // --- Utility: simulated API (returns matches after 400ms) ---
+    const FAKE_DB = [
+      'apple','apricot','banana','blackberry','blueberry','cherry','coconut','cranberry',
+      'date','dragonfruit','fig','grape','grapefruit','kiwi','lemon','lime','mango','melon',
+      'nectarine','orange','papaya','peach','pear','pineapple','plum','pomegranate','raspberry','strawberry'
+    ];
+
+    let apiCallCount = 0;
+    function fakeApi(query){
+      apiCallCount++;
+      document.getElementById('apiCount').textContent = apiCallCount;
+      // simulate network latency
+      return new Promise(resolve => {
+        setTimeout(() => {
+          const q = (query || '').trim().toLowerCase();
+          const results = q ? FAKE_DB.filter(s => s.includes(q)).slice(0,8) : [];
+          resolve(results);
+        }, 400);
+      });
+    }
+
+    // --- Debounce and Throttle implementations ---
+    function debounce(fn, delay){
+      let timer;
+      return function(...args){
+        clearTimeout(timer);
+        timer = setTimeout(() => fn.apply(this, args), delay);
+      }
+    }
+
+    function throttle(fn, limit){
+      let lastCall = 0;
+      let pendingArgs = null;
+      return function(...args){
+        const now = Date.now();
+        if (now - lastCall >= limit){
+          lastCall = now;
+          fn.apply(this, args);
+        } else {
+          // optional: schedule the last call right after limit
+          pendingArgs = args;
+          clearTimeout(throttle._timer);
+          throttle._timer = setTimeout(() => {
+            lastCall = Date.now();
+            if (pendingArgs) fn.apply(this, pendingArgs);
+            pendingArgs = null;
+          }, limit - (now - lastCall));
+        }
+      }
+    }
+
+    // --- Wiring UI ---
+    const input = document.getElementById('search');
+    const resultsEl = document.getElementById('results');
+    const logEl = document.getElementById('log');
+    const modeLabel = document.getElementById('modeLabel');
+    const delayInput = document.getElementById('delay');
+    const apiCountEl = document.getElementById('apiCount');
+
+    function log(msg){
+      const time = new Date().toLocaleTimeString();
+      logEl.innerHTML = `<div>[${time}] ${msg}</div>` + logEl.innerHTML;
+    }
+
+    function showResults(items){
+      resultsEl.innerHTML = items.map(it => `<li class="result-item">${it}</li>`).join('') || '<li class="result-item small">No results</li>';
+    }
+
+    // core search function that calls fakeApi and shows results
+    async function doSearch(query){
+      log(`calling API for "${escapeHtml(query)}"`);
+      const res = await fakeApi(query);
+      showResults(res);
+      log(`API returned ${res.length} items for "${escapeHtml(query)}"`);
+    }
+
+    // escape html for logs
+    function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
+
+    // create the current handler (debounce or throttle)
+    let currentHandler = null;
+    function makeHandler(){
+      const mode = document.querySelector('input[name="mode"]:checked').value;
+      const delay = Math.max(50, parseInt(delayInput.value) || 300);
+      modeLabel.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+      if (mode === 'debounce'){
+        return debounce((e) => doSearch(e.target.value), delay);
+      } else {
+        return throttle((e) => doSearch(e.target.value), delay);
+      }
+    }
+
+    function attachHandler(){
+      if (currentHandler) input.removeEventListener('input', currentHandler);
+      currentHandler = makeHandler();
+      input.addEventListener('input', currentHandler);
+      log(`Attached ${document.querySelector('input[name="mode"]:checked').value} (delay ${delayInput.value}ms)`);
+    }
+
+    // initial attach
+    attachHandler();
+
+    // UI events: change mode or delay
+    document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener('change', () => {
+      attachHandler();
+      // clear results / simulate fresh state
+      showResults([]);
+    }));
+    delayInput.addEventListener('change', () => {
+      attachHandler();
+    });
+
+    document.getElementById('clear').addEventListener('click', () => {
+      logEl.innerHTML = '';
+      resultsEl.innerHTML = '';
+      apiCallCount = 0;
+      apiCountEl.textContent = apiCallCount;
+    });
+
+    // simulate rapid typing (for video demo)
+    document.getElementById('simulate').addEventListener('click', async () => {
+      const phrase = 'berry';
+      input.value = '';
+      // simulate typing each char quickly
+      for (let i=0;i<phrase.length;i++){
+        input.value += phrase[i];
+        // directly call the bound handler as if input event fired
+        input.dispatchEvent(new Event('input'));
+        await new Promise(r => setTimeout(r, 80)); // 80ms between keypresses
+      }
+      log('Finished simulated rapid typing: "' + phrase + '"');
+    });
+
+    // helper: allow pressing ESC to clear input
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        input.value = '';
+        showResults([]);
+        log('Input cleared (ESC)');
+      }
+    });
+
+    // Accessibility: announce mode on load
+    window.addEventListener('load', () => {
+      log('Ready — default: Debounce (500ms). Try "Simulate rapid input" to compare.');
+    });
+
+  </script>
+</body>
+</html>
